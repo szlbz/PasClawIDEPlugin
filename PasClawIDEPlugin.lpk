@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CONFIG>
+  <Package Version="5">
+    <PathDelim Value="\"/>
+    <Name Value="PasClawIDEPlugin"/>
+    <Type Value="DesignTime"/>
+    <Author Value="Lazarus Developer"/>
+    <CompilerOptions>
+      <Version Value="11"/>
+      <SearchPaths>
+        <UnitOutputDirectory Value="lib"/>
+      </SearchPaths>
+      <Parsing>
+        <SyntaxOptions>
+          <UseAnsiStrings Value="False"/>
+        </SyntaxOptions>
+      </Parsing>
+    </CompilerOptions>
+    <Description Value="PasClaw AI Agent integration for Lazarus IDE"/>
+    <Version Minor="2"/>
+    <Files Count="7">
+      <Item1>
+        <Filename Value="PasClawIDEPlugin.pas"/>
+        <UnitName Value="PasClawIDEPlugin"/>
+      </Item1>
+      <Item2>
+        <Filename Value="pasclawreg.pas"/>
+        <HasRegisterProc Value="True"/>
+        <UnitName Value="PasClawReg"/>
+      </Item2>
+      <Item3>
+        <Filename Value="pasclawsession.pas"/>
+        <UnitName Value="PasClawSession"/>
+      </Item3>
+      <Item4>
+        <Filename Value="pasclawchatwindow.pas"/>
+        <UnitName Value="PasClawChatWindow"/>
+      </Item4>
+      <Item5>
+        <Filename Value="pasclawconfig.pas"/>
+        <UnitName Value="PasClawConfig"/>
+      </Item5>
+      <Item6>
+        <Filename Value="pasclawsettingsdlg.pas"/>
+        <UnitName Value="PasClawSettingsDlg"/>
+      </Item6>
+      <Item7>
+        <Filename Value="pasclawagentlog.pas"/>
+        <UnitName Value="PasClawAgentLog"/>
+      </Item7>
+    </Files>
+    <CompatibilityMode Value="True"/>
+    <RequiredPkgs Count="4">
+      <Item1>
+        <PackageName Value="IDEIntf"/>
+      </Item1>
+      <Item2>
+        <PackageName Value="LCL"/>
+      </Item2>
+      <Item3>
+        <PackageName Value="SynEdit"/>
+      </Item3>
+      <Item4>
+        <PackageName Value="FCL"/>
+      </Item4>
+    </RequiredPkgs>
+    <UsageOptions>
+      <UnitPath Value="$(PkgOutDir)"/>
+    </UsageOptions>
+    <PublishOptions>
+      <Version Value="2"/>
+    </PublishOptions>
+  </Package>
+</CONFIG>

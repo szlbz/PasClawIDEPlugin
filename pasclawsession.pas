@@ -7,7 +7,7 @@ unit PasClawSession;
 interface
 
 uses
-  Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, Dialogs,
+  Classes, SysUtils, fpjson, jsonparser, Forms, Controls, StdCtrls, ExtCtrls, Dialogs,
   Process, LCLType, Clipbrd, Graphics, LConvEncoding,LazUTF8,
   SynEdit, SynEditTypes, SynHighlighterPas,ProjectIntf,
   SrcEditorIntf, LazIDEIntf, IDEIntf,
@@ -28,10 +28,15 @@ type
     FHistoryDraft: string;
     FLogId: Integer;
     FLogStart: TDateTime;
+    { prompt / 输出之间分隔条的位置记忆：拖动后写进 FSessionLayoutFile，
+      下次建会话时按它还原 prompt 的高度（输出占剩下的部分）。 }
+    FSessionLayoutFile: string;
+    FPromptHeight: Integer;
     // UI
     pnlTop: TPanel;
     pnlBottom: TPanel;
-    edtPrompt: TEdit;
+    FSplitter: TSplitter;
+    edtPrompt: TMemo;
     btnSend: TButton;
     btnSendSelection: TButton;
     btnInsert: TButton;
@@ -61,6 +66,9 @@ type
     procedure LoadHistory;
     procedure AppendHistory(const APrompt: string);
     procedure NavigateHistory(ADelta: Integer);
+    procedure LoadLayout;
+    procedure SaveLayout;
+    procedure ApplyPromptHeight;
     // 事件
     procedure btnSendClick(Sender: TObject);
     procedure btnSendSelectionClick(Sender: TObject);
@@ -70,6 +78,8 @@ type
     procedure btnLogClick(Sender: TObject);
     procedure btnSetClick(Sender: TObject);
     procedure edtPromptKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
+    procedure SplitterMoved(Sender: TObject);
+    procedure FrameResize(Sender: TObject);
   public
     constructor Create(AOwner: TComponent; const ATabCaption: string); reintroduce;
     destructor  Destroy; override;
@@ -84,6 +94,14 @@ const
   MaxTitleLen   = 28;
   HistoryFile   = '.pasclaw_history.txt';
   MaxHistoryMem = 200;
+  { 分隔条位置记在这个文件里（插件数据目录，和 ide-plugin.json、agentlog.db
+    并排）。单开一个小文件，免得为了记住一个高度就去重写插件设置和
+    pasclaw 自己的 config.json。 }
+  SessionLayoutFile   = 'ide-session.json';
+  DefaultPromptHeight = 34;    // 没有记忆时的 prompt 高度（= 加分隔条之前写死的值）
+  MinPaneHeight       = 30;    // 拖动时 prompt / 输出各自的下限
+  MaxPromptHeight     = 2000;  // 手写或损坏文件里的离谱值
+  SplitterThickness   = 6;
 
 { ---------------- 构造 / 析构 ---------------- }
 
@@ -98,6 +116,9 @@ begin
   FLogId        := -1;
   FLogStart     := 0;
   FHistory      := TStringList.Create;
+  { 先读上次拖动分隔条记下的 prompt 高度，再建界面，免得建完再挪一次 }
+  FSessionLayoutFile := TPasClawIDESettings.DataFile(SessionLayoutFile);
+  LoadLayout;
   BorderStyle   := bsNone;      // 作为子控件时无边框
   BuildUI;
   SetupTimer;
@@ -113,6 +134,112 @@ begin
   inherited Destroy;
 end;
 
+{ ---------------- 分隔条位置的记忆 ---------------- }
+
+{ 读 prompt 高度；文件不存在 / 读不动 / 内容不对都退回默认高度。 }
+procedure TSessionFrame.LoadLayout;
+var
+  L: TStringList;
+  Data: TJSONData;
+  Num: TJSONData;
+  H: Integer;
+begin
+  FPromptHeight := DefaultPromptHeight;
+  if not FileExists(FSessionLayoutFile) then Exit;
+  try
+    L := TStringList.Create;
+    try
+      L.LoadFromFile(FSessionLayoutFile);
+      Data := nil;
+      try
+        Data := GetJSON(L.Text);
+      except
+        Data := nil;
+      end;
+      try
+        if Data is TJSONObject then
+        begin
+          Num := TJSONObject(Data).Find('promptHeight');
+          if Num is TJSONNumber then
+          begin
+            H := TJSONNumber(Num).AsInteger;
+            if H < MinPaneHeight then H := MinPaneHeight;
+            if H > MaxPromptHeight then H := MaxPromptHeight;
+            FPromptHeight := H;
+          end;
+        end;
+      finally
+        Data.Free;
+      end;
+    finally
+      L.Free;
+    end;
+  except
+    { 忽略：用默认高度 }
+    FPromptHeight := DefaultPromptHeight;
+  end;
+end;
+
+procedure TSessionFrame.SaveLayout;
+var
+  Obj: TJSONObject;
+  L: TStringList;
+  S: string;
+begin
+  try
+    ForceDirectories(ExtractFilePath(FSessionLayoutFile));
+    Obj := TJSONObject.Create;
+    try
+      Obj.Add('promptHeight', FPromptHeight);
+      S := Obj.FormatJSON(AsJSONFormat) + LineEnding;
+    finally
+      Obj.Free;
+    end;
+    L := TStringList.Create;
+    try
+      L.Text := S;
+      L.SaveToFile(FSessionLayoutFile);
+    finally
+      L.Free;
+    end;
+  except
+    { 写不进去只是下次记不住位置，不影响使用 }
+  end;
+end;
+
+procedure TSessionFrame.SplitterMoved(Sender: TObject);
+begin
+  if FPromptHeight = pnlTop.Height then Exit;   // 没真动过就不写盘
+  FPromptHeight := pnlTop.Height;
+  SaveLayout;
+end;
+
+{ 按记忆的高度摆 prompt 面板，但绝不让输出面板被挤没：窗口（或 IDE 停靠
+  面板）比记忆里的高度还矮时，把 prompt 压到放得下的最大值。压下去的只是
+  当前高度，FPromptHeight 不动 —— 窗口再变高时不该把记忆一起改掉。 }
+procedure TSessionFrame.ApplyPromptHeight;
+var
+  H, Room: Integer;
+begin
+  H := FPromptHeight;
+  if ClientHeight > 0 then
+  begin
+    Room := ClientHeight - pnlBottom.Height - SplitterThickness
+            - pnlTop.BorderSpacing.GetSideSpace(akTop)
+            - pnlTop.BorderSpacing.GetSideSpace(akBottom)
+            - MinPaneHeight;
+    if (Room >= MinPaneHeight) and (H > Room) then H := Room;
+  end;
+  if pnlTop.Height <> H then
+    pnlTop.Height := H;
+end;
+
+procedure TSessionFrame.FrameResize(Sender: TObject);
+begin
+  if (pnlTop = nil) or (pnlBottom = nil) then Exit;  // BuildUI 还没建完
+  ApplyPromptHeight;
+end;
+
 { ---------------- UI 构建 ---------------- }
 
 procedure TSessionFrame.BuildUI;
@@ -120,7 +247,7 @@ begin
   pnlTop := TPanel.Create(Self);
   pnlTop.Parent := Self;
   pnlTop.Align := alTop;
-  pnlTop.Height := 34;
+  pnlTop.Height := FPromptHeight;
   pnlTop.BevelOuter := bvNone;
   pnlTop.BorderSpacing.Around := 4;
 
@@ -131,12 +258,29 @@ begin
   btnSend.Width := 70;
   btnSend.OnClick := @btnSendClick;
 
-  edtPrompt := TEdit.Create(Self);
+  edtPrompt := TMemo.Create(Self);
   edtPrompt.Parent := pnlTop;
   edtPrompt.Align := alClient;
   edtPrompt.OnKeyDown := @edtPromptKeyDown;
-  edtPrompt.Hint := '↑/↓ 翻阅历史 prompt';
+  //edtPrompt.Hint := '↑/↓ 翻阅历史 prompt';
   edtPrompt.ShowHint:=True;
+
+  { prompt 与输出之间的横向分隔条：拖动它改变 edtPrompt / memOutput 的高度。
+    alTop 的分隔条调整的是"紧挨在它上面"的那个控件的尺寸（LCL 按位置找，
+    见 TCustomSplitter.FindAlignControl），所以 prompt 面板必须排在它上面。 }
+  FSplitter := TSplitter.Create(Self);
+  FSplitter.Name := 'splPrompt';
+  FSplitter.Parent := Self;
+  FSplitter.Align := alTop;
+  FSplitter.Height := SplitterThickness;
+  { MinSize 对上下两半都生效；AutoSnap=False 才会老老实实停在下限，
+    默认的 True 是一拖过界就把 prompt 缩成 1px。 }
+  FSplitter.MinSize := MinPaneHeight;
+  FSplitter.AutoSnap := False;
+  FSplitter.OnMoved := @SplitterMoved;
+  { 显式给出初始位置：alTop 控件按当前 Top 排序，Top 相同时 LCL 才看
+    "谁最近动过边界"；不指定的话分隔条有跑到 prompt 上面的风险。 }
+  FSplitter.Top := pnlTop.Top + pnlTop.Height;
 
   pnlBottom := TPanel.Create(Self);
   pnlBottom.Parent := Self;
@@ -199,6 +343,10 @@ begin
   memOutput.Gutter.Color := clBtnFace;
   // 高亮器延迟到窗体显示后挂载，避免 IDE 启动早期初始化冲突
   memOutput.Options := memOutput.Options + [eoHideRightMargin];
+
+  { 窗口（IDE 停靠面板）变矮时回落 prompt 高度，别把输出面板挤没 }
+  OnResize := @FrameResize;
+  ApplyPromptHeight;
 end;
 
 procedure TSessionFrame.SetupTimer;
@@ -580,7 +728,7 @@ begin
     FByteBuffer:=SanitizeUnicode(FByteBuffer);
     if FByteBuffer <> '' then
     begin
-      AppendStreamChunk(StripAnsiManual({$ifdef windows11}CP936ToUTF8({$endif}FByteBuffer));
+      AppendStreamChunk(StripAnsiManual(FByteBuffer));
       FByteBuffer := '';
     end;
     AppendStreamChunk('会话结束...');
@@ -632,7 +780,7 @@ begin
   FByteBuffer  := Remaining;
   CompletePart:=SanitizeUnicode(CompletePart);
   if CompletePart <> '' then
-    AppendStreamChunk(StripAnsiManual({$ifdef windows11}CP936ToUTF8({$endif}CompletePart));
+    AppendStreamChunk(StripAnsiManual(CompletePart));
 end;
 
 procedure TSessionFrame.AppendStreamChunk(const S: string);
@@ -821,29 +969,31 @@ end;
 procedure TSessionFrame.edtPromptKeyDown(Sender: TObject; var Key: Word;
   Shift: TShiftState);
 begin
-  if Shift = [] then
-  begin
-    case Key of
-      VK_RETURN:
-        begin
-          btnSendClick(nil);
-          Key := 0;
-          Exit;
-        end;
-      VK_UP:
-        begin
-          NavigateHistory(-1);
-          Key := 0;
-          Exit;
-        end;
-      VK_DOWN:
-        begin
-          NavigateHistory(+1);
-          Key := 0;
-          Exit;
-        end;
-    end;
-  end;
+  { 回车发送 / ↑↓ 翻阅历史 的按键分支目前都被注释掉了；空的 case 不是合法
+    Pascal，所以整条 case 也一并注释。要恢复哪个键，把对应分支放回来即可。 }
+  //if Shift = [] then
+  //begin
+  //  case Key of
+  //    VK_RETURN:
+  //      begin
+  //        btnSendClick(nil);
+  //        Key := 0;
+  //        Exit;
+  //      end;
+  //    VK_UP:
+  //      begin
+  //        NavigateHistory(-1);
+  //        Key := 0;
+  //        Exit;
+  //      end;
+  //    VK_DOWN:
+  //      begin
+  //        NavigateHistory(+1);
+  //        Key := 0;
+  //        Exit;
+  //      end;
+  //  end;
+  //end;
 end;
 
 end.
